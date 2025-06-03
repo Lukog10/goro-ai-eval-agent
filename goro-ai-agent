@@ -1,0 +1,120 @@
+"""
+Goro – AI Evaluation Agent using GPT-4
+
+This agent answers questions according to strict benchmark requirements.
+
+System Prompt Style:
+--------------------
+You are a general AI assistant. I will ask you a question. Report your thoughts,
+and finish your answer with the following template:
+FINAL ANSWER: [YOUR FINAL ANSWER].
+
+YOUR FINAL ANSWER should be a number OR as few words as possible OR a comma separated list of numbers and/or strings.
+If you are asked for a number, don't use comma to write your number neither use units such as $ or percent sign unless specified otherwise.
+If you are asked for a string, don't use articles, neither abbreviations (e.g. for cities), and write the digits in plain text unless specified otherwise.
+If you are asked for a comma separated list, apply the above rules depending of whether the element to be put in the list is a number or a string.
+"""
+
+import openai
+import json
+import time
+
+
+class Goro:
+    def __init__(self, model_name="gpt-4"):
+        self.model_name = model_name
+
+    def call_gpt4(self, prompt):
+        """Call OpenAI GPT-4 with system and user prompts"""
+        try:
+            response = openai.ChatCompletion.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content": (
+                        "You are a general AI assistant. I will ask you a question. Report your thoughts, "
+                        "and finish your answer with the following template: FINAL ANSWER: [YOUR FINAL ANSWER]. "
+                        "YOUR FINAL ANSWER should be a number OR as few words as possible OR a comma separated list "
+                        "of numbers and/or strings. If you are asked for a number, don't use comma to write your number "
+                        "neither use units such as $ or percent sign unless specified otherwise. If you are asked for a string, "
+                        "don't use articles, neither abbreviations (e.g. for cities), and write the digits in plain text unless specified otherwise."
+                    )},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0
+            )
+            return response['choices'][0]['message']['content']
+        except Exception as e:
+            print(f"Error calling GPT-4: {e}")
+            time.sleep(2)
+            return "FINAL ANSWER: ERROR"
+
+    def normalize_answer(self, answer, answer_type):
+        """Normalize model answer according to type"""
+        answer = answer.strip()
+
+        if answer_type == "number":
+            answer = answer.replace(",", "")
+            return ''.join([c for c in answer if c.isdigit() or c == '.' or c == '-'])
+
+        elif answer_type == "string":
+            answer = answer.lower()
+            for article in ["the ", "a ", "an "]:
+                if answer.startswith(article):
+                    answer = answer[len(article):]
+            return answer.strip()
+
+        elif answer_type == "list":
+            items = [self.normalize_answer(item, "number" if item.strip().replace('.', '', 1).isdigit() else "string")
+                     for item in answer.split(",")]
+            return ",".join(item.strip() for item in items)
+
+        return answer
+
+    def generate_response(self, task_id, question, answer_type="string"):
+        """Generate model output and formatted final answer"""
+        full_response = self.call_gpt4(question)
+
+        # Extract FINAL ANSWER
+        final_line = next((line for line in full_response.splitlines() if "FINAL ANSWER:" in line), None)
+        if not final_line:
+            raise ValueError(f"FINAL ANSWER not found for task {task_id}")
+
+        raw_answer = final_line.split("FINAL ANSWER:")[-1].strip()
+        normalized = self.normalize_answer(raw_answer, answer_type)
+
+        return {
+            "task_id": task_id,
+            "model_answer": normalized,
+            "reasoning_trace": full_response
+        }
+
+    def process_batch(self, task_list):
+        """Process a list of tasks (dicts with task_id, question, answer_type)"""
+        return [
+            self.generate_response(task["task_id"], task["question"], task.get("answer_type", "string"))
+            for task in task_list
+        ]
+
+    def save_to_jsonl(self, results, filename="goro_submission.jsonl"):
+        """Save results in benchmark-compatible JSONL format"""
+        with open(filename, "w") as f:
+            for entry in results:
+                f.write(json.dumps(entry) + "\n")
+
+
+# Optional: Example usage
+if __name__ == "__main__":
+    import os
+    openai.api_key = os.getenv("OPENAI_API_KEY")
+
+    goro = Goro(model_name="gpt-4")
+    
+    tasks = [
+        {"task_id": "task_001", "question": "What is the capital of Canada?", "answer_type": "string"},
+        {"task_id": "task_002", "question": "What is the square root of 144?", "answer_type": "number"},
+        {"task_id": "task_003", "question": "Name the first three planets in the solar system.", "answer_type": "list"}
+    ]
+
+    results = goro.process_batch(tasks)
+    goro.save_to_jsonl(results)
+    print("Submission file saved as goro_submission.jsonl")
